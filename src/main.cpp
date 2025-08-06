@@ -221,18 +221,6 @@ void load_fen_book() {
     }
 }
 
-// Function to get a FEN, either randomly from the book or the default one.
-std::string get_start_fen() {
-    if (g_fen_book.empty()) {
-        return "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w R2r2N2n2B2b2A2a2C2c2P5p5 0 1";
-    }
-    
-    // Static random engine to ensure it's seeded only once.
-    static std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<size_t> dist(0, g_fen_book.size() - 1);
-    return g_fen_book[dist(rng)];
-}
-
 void run_tournament() {
     g_stop_match = false;
     g_score_engine1 = 0.0;
@@ -245,14 +233,21 @@ void run_tournament() {
     // Load the book at the start of the match.
     load_fen_book();
 
+    if (!g_fen_book.empty()) {
+        send_info_string("Shuffling FEN book...");
+        std::random_device rd;
+        std::mt19937 g(rd());
+        std::shuffle(g_fen_book.begin(), g_fen_book.end(), g);
+    }
+
     int total_games = g_rounds * 2;
     send_info_string("Populating game queue...");
     {
         std::lock_guard<std::mutex> lock(g_queue_mutex);
         g_game_queue.clear();
         for (int i = 0; i < g_rounds; ++i) {
-            // Get one FEN for the pair of games in this round to ensure fairness.
-            std::string start_pos_fen = get_start_fen();
+            // Get the next FEN sequentially from the shuffled book, wrapping around if necessary.
+            std::string start_pos_fen = g_fen_book.empty() ? "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w R2r2N2n2B2b2A2a2C2c2P5p5 0 1" : g_fen_book[i % g_fen_book.size()];
 
             g_game_queue.push_back({
                 i * 2 + 1,
@@ -268,7 +263,7 @@ void run_tournament() {
             });
         }
     }
-    
+
     send_to_gui(std::format("info game 0/{}", total_games));
     send_to_gui("info wld 0-0-0");
     send_info_string(std::format("Match started with {} worker(s).", g_concurrency));
@@ -282,7 +277,7 @@ void run_tournament() {
     for (auto& w : workers) {
         if(w.joinable()) w.join();
     }
-    
+
     if (g_stop_match) {
         send_info_string("Tournament stopped prematurely.");
     } else {
