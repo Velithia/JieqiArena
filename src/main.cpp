@@ -17,6 +17,7 @@
 
 // --- Global State for Tournament Configuration ---
 std::string g_engine1_path, g_engine2_path;
+std::string g_engine1_options, g_engine2_options;
 int g_rounds = 10;
 int g_concurrency = 2;
 TimeControl g_tc = {1000, 1000, 100, 100}; // Default 1s + 0.1s
@@ -27,6 +28,8 @@ struct GameTask {
     int game_id;
     std::string red_engine_path;
     std::string black_engine_path;
+    std::string red_engine_options;
+    std::string black_engine_options;
 };
 
 std::deque<GameTask> g_game_queue;
@@ -55,7 +58,6 @@ void stop_all_engines() {
     g_active_engines.clear();
 }
 
-// Added is_primary parameter
 Color play_game(const GameTask& task, bool is_primary) {
     Engine red_engine("Red", task.game_id);
     Engine black_engine("Black", task.game_id);
@@ -76,6 +78,9 @@ Color play_game(const GameTask& task, bool is_primary) {
         red_engine.stop();
         return Color::RED;
     }
+
+    red_engine.apply_uci_options(task.red_engine_options);
+    black_engine.apply_uci_options(task.black_engine_options);
 
     Color result = Color::NONE;
     try {
@@ -110,7 +115,6 @@ Color play_game(const GameTask& task, bool is_primary) {
     return result;
 }
 
-// Added worker_id to determine the primary worker
 void worker(int worker_id) {
     bool is_primary_worker = (worker_id == 0);
 
@@ -144,9 +148,7 @@ void worker(int worker_id) {
         // Pass the primary flag to play_game
         Color result = play_game(task, is_primary_worker);
         
-        // This logic remains the same, but now it's important that it's outside
-        // the primary worker check, so all results are tallied.
-        bool e1_was_red = (task.red_engine_path == g_engine1_path);
+        bool e1_was_red = (task.red_engine_path == g_engine1_path && task.red_engine_options == g_engine1_options);
         
         if (result == Color::RED) {
             if (e1_was_red) {
@@ -198,8 +200,18 @@ void run_tournament() {
         std::lock_guard<std::mutex> lock(g_queue_mutex);
         g_game_queue.clear();
         for (int i = 0; i < g_rounds; ++i) {
-            g_game_queue.push_back({i * 2 + 1, g_engine1_path, g_engine2_path});
-            g_game_queue.push_back({i * 2 + 2, g_engine2_path, g_engine1_path});
+            // Game where Engine 1 is Red, Engine 2 is Black
+            g_game_queue.push_back({
+                i * 2 + 1,
+                g_engine1_path, g_engine2_path,
+                g_engine1_options, g_engine2_options
+            });
+            // Game where Engine 2 is Red, Engine 1 is Black
+            g_game_queue.push_back({
+                i * 2 + 2,
+                g_engine2_path, g_engine1_path,
+                g_engine2_options, g_engine1_options
+            });
         }
     }
     
@@ -233,7 +245,9 @@ void handle_jai() {
     send_to_gui("id author Velithia");
     
     send_to_gui("option name Engine1Path type string");
+    send_to_gui("option name Engine1Options type string");
     send_to_gui("option name Engine2Path type string");
+    send_to_gui("option name Engine2Options type string");
     send_to_gui("option name TotalRounds type spin default 10 min 1 max 1000");
     send_to_gui("option name Concurrency type spin default 2 min 1 max 128");
     send_to_gui("option name MainTimeMs type spin default 1000 min 0 max 3600000");
@@ -258,6 +272,8 @@ void handle_setoption(const std::string& line) {
 
     if (option_name == "Engine1Path") g_engine1_path = option_value;
     else if (option_name == "Engine2Path") g_engine2_path = option_value;
+    else if (option_name == "Engine1Options") g_engine1_options = option_value;
+    else if (option_name == "Engine2Options") g_engine2_options = option_value;
     else if (option_name == "TotalRounds") g_rounds = std::stoi(option_value);
     else if (option_name == "Concurrency") g_concurrency = std::stoi(option_value);
     else if (option_name == "MainTimeMs") g_tc.wtime_ms = g_tc.btime_ms = std::stoi(option_value);

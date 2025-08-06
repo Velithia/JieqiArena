@@ -22,6 +22,8 @@ public:
     const std::string& get_name() const;
     void set_position(std::string_view fen, const std::vector<std::string>& moves);
     
-    // Added is_primary_game parameter
     std::string go(const std::string& go_command, bool is_primary_game);
+    
+    // Apply UCI options to the engine process
+    void apply_uci_options(const std::string& options_str);
 };

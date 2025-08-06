@@ -5,6 +5,7 @@
 #include <format>
 #include <thread>
 #include <chrono>
+#include <algorithm> // for std::find_if
 
 Engine::Engine(std::string name, int job_id) : name(std::move(name)), logger(name, job_id) {}
 
@@ -20,6 +21,67 @@ void Engine::stop() {
     process.stop();
 }
 
+void Engine::apply_uci_options(const std::string& options_str) {
+    if (options_str.empty()) {
+        return;
+    }
+
+    // Helper lambda to trim whitespace from both ends of a string
+    auto trim = [](std::string& s) {
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }));
+        s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        }).base(), s.end());
+    };
+
+    std::string temp_options = options_str;
+    size_t current_pos = 0;
+    const std::string name_keyword = "name ";
+
+    // The logic is to find "name " to identify the start of each option,
+    // then find the next "name " to identify the end of the current option.
+    while ((current_pos = temp_options.find(name_keyword, current_pos)) != std::string::npos) {
+        // Find the start of the next option to delimit the end of the current one.
+        size_t next_name_pos = temp_options.find(name_keyword, current_pos + name_keyword.length());
+
+        // Extract the full block for one option
+        std::string block = temp_options.substr(current_pos, next_name_pos - current_pos);
+
+        // Move current_pos for the next iteration
+        current_pos = next_name_pos;
+
+        // Now parse the single block
+        const std::string value_keyword = " value ";
+        size_t value_pos = block.find(value_keyword);
+
+        if (value_pos != std::string::npos) {
+            // Extract the name part (between "name " and " value ")
+            std::string opt_name = block.substr(name_keyword.length(), value_pos - name_keyword.length());
+            
+            // Extract the value part (everything after " value ")
+            std::string opt_value = block.substr(value_pos + value_keyword.length());
+
+            // Clean up any leading/trailing whitespace
+            trim(opt_name);
+            trim(opt_value);
+
+            if (!opt_name.empty()) {
+                std::string cmd = std::format("setoption name {} value {}", opt_name, opt_value);
+                logger.log_to_engine(cmd);
+                process.write_line(cmd);
+            }
+        }
+        
+        // If we are at the end, break the loop
+        if (next_name_pos == std::string::npos) {
+            break;
+        }
+    }
+}
+
+
 const std::string& Engine::get_name() const { return name; }
 
 void Engine::set_position(std::string_view fen, const std::vector<std::string>& moves) {
@@ -34,7 +96,6 @@ void Engine::set_position(std::string_view fen, const std::vector<std::string>& 
     process.write_line(cmd);
 }
 
-// Added is_primary_game parameter
 std::string Engine::go(const std::string& go_command, bool is_primary_game) {
     logger.log_to_engine(go_command);
     process.write_line(go_command);
