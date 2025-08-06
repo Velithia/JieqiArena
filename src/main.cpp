@@ -8,6 +8,8 @@
 #include <format>
 #include <sstream>
 #include <algorithm>
+#include <fstream> // For file input
+#include <random>  // For better random number generation
 
 #include "types.hpp"
 #include "time_manager.hpp"
@@ -18,6 +20,7 @@
 // --- Global State for Tournament Configuration ---
 std::string g_engine1_path, g_engine2_path;
 std::string g_engine1_options, g_engine2_options;
+std::string g_book_file_path; // Path to the opening book file
 int g_rounds = 10;
 int g_concurrency = 2;
 TimeControl g_tc = {1000, 1000, 100, 100}; // Default 1s + 0.1s
@@ -30,10 +33,12 @@ struct GameTask {
     std::string black_engine_path;
     std::string red_engine_options;
     std::string black_engine_options;
+    std::string start_fen;
 };
 
 std::deque<GameTask> g_game_queue;
 std::mutex g_queue_mutex;
+std::vector<std::string> g_fen_book; // Vector to store FENs from the book
 std::atomic<double> g_score_engine1(0.0);
 std::atomic<double> g_score_engine2(0.0);
 std::atomic<int> g_draws(0);
@@ -48,7 +53,7 @@ std::vector<Engine*> g_active_engines;
 std::mutex g_engines_mutex;
 
 
-// --- Game Logic (remains mostly the same, but uses protocol for output) ---
+// --- Game Logic ---
 
 void stop_all_engines() {
     std::lock_guard<std::mutex> lock(g_engines_mutex);
@@ -84,13 +89,12 @@ Color play_game(const GameTask& task, bool is_primary) {
 
     Color result = Color::NONE;
     try {
-        // Check if tournament should be stopped before starting the game
         if (g_stop_match) {
             return Color::NONE;
         }
         
-        const std::string initial_fen = "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w R2r2N2n2B2b2A2a2C2c2P5p5 0 1";
-        // Only the primary worker sends the FEN
+        // Use the FEN provided in the game task.
+        const std::string& initial_fen = task.start_fen;
         if (is_primary) {
             send_to_gui(std::format("info fen {}", initial_fen));
         }
@@ -185,6 +189,50 @@ void worker(int worker_id) {
     }
 }
 
+
+// --- Tournament Management ---
+
+// Function to load the FEN book from a file.
+void load_fen_book() {
+    g_fen_book.clear();
+    if (g_book_file_path.empty()) {
+        return; // No book file provided, will use default FEN.
+    }
+
+    std::ifstream file(g_book_file_path);
+    if (!file.is_open()) {
+        send_info_string("Warning: Could not open BookFile: " + g_book_file_path + ". Using default position.");
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        // Simple validation: ignore empty lines.
+        if (!line.empty()) {
+            g_fen_book.push_back(line);
+        }
+    }
+    file.close();
+
+    if (g_fen_book.empty()) {
+        send_info_string("Warning: BookFile is empty. Using default position.");
+    } else {
+        send_info_string(std::format("Successfully loaded {} FENs from BookFile.", g_fen_book.size()));
+    }
+}
+
+// Function to get a FEN, either randomly from the book or the default one.
+std::string get_start_fen() {
+    if (g_fen_book.empty()) {
+        return "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w R2r2N2n2B2b2A2a2C2c2P5p5 0 1";
+    }
+    
+    // Static random engine to ensure it's seeded only once.
+    static std::mt19937 rng(std::random_device{}());
+    std::uniform_int_distribution<size_t> dist(0, g_fen_book.size() - 1);
+    return g_fen_book[dist(rng)];
+}
+
 void run_tournament() {
     g_stop_match = false;
     g_score_engine1 = 0.0;
@@ -192,7 +240,10 @@ void run_tournament() {
     g_draws = 0;
     g_wins_engine1 = 0;
     g_losses_engine1 = 0;
-    g_games_completed = 0; // Reset counter
+    g_games_completed = 0;
+
+    // Load the book at the start of the match.
+    load_fen_book();
 
     int total_games = g_rounds * 2;
     send_info_string("Populating game queue...");
@@ -200,17 +251,20 @@ void run_tournament() {
         std::lock_guard<std::mutex> lock(g_queue_mutex);
         g_game_queue.clear();
         for (int i = 0; i < g_rounds; ++i) {
-            // Game where Engine 1 is Red, Engine 2 is Black
+            // Get one FEN for the pair of games in this round to ensure fairness.
+            std::string start_pos_fen = get_start_fen();
+
             g_game_queue.push_back({
                 i * 2 + 1,
                 g_engine1_path, g_engine2_path,
-                g_engine1_options, g_engine2_options
+                g_engine1_options, g_engine2_options,
+                start_pos_fen
             });
-            // Game where Engine 2 is Red, Engine 1 is Black
             g_game_queue.push_back({
                 i * 2 + 2,
                 g_engine2_path, g_engine1_path,
-                g_engine2_options, g_engine1_options
+                g_engine2_options, g_engine1_options,
+                start_pos_fen
             });
         }
     }
@@ -248,6 +302,7 @@ void handle_jai() {
     send_to_gui("option name Engine1Options type string");
     send_to_gui("option name Engine2Path type string");
     send_to_gui("option name Engine2Options type string");
+    send_to_gui("option name BookFile type string"); // ADDED
     send_to_gui("option name TotalRounds type spin default 10 min 1 max 1000");
     send_to_gui("option name Concurrency type spin default 2 min 1 max 128");
     send_to_gui("option name MainTimeMs type spin default 1000 min 0 max 3600000");
@@ -274,6 +329,7 @@ void handle_setoption(const std::string& line) {
     else if (option_name == "Engine2Path") g_engine2_path = option_value;
     else if (option_name == "Engine1Options") g_engine1_options = option_value;
     else if (option_name == "Engine2Options") g_engine2_options = option_value;
+    else if (option_name == "BookFile") g_book_file_path = option_value;
     else if (option_name == "TotalRounds") g_rounds = std::stoi(option_value);
     else if (option_name == "Concurrency") g_concurrency = std::stoi(option_value);
     else if (option_name == "MainTimeMs") g_tc.wtime_ms = g_tc.btime_ms = std::stoi(option_value);

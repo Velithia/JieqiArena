@@ -43,6 +43,13 @@ JieqiArena is a demo of JAI (Jieqi Arena Interface) that supports basic engine c
     *   Min: `1`
     *   Max: `128`
 
+### Game Settings
+
+*   **BookFile**
+    *   Description: Path to an opening book file. The file should contain one FEN position per line. At the start of each round, a FEN is chosen randomly from this file to be used for that round's pair of games. If the path is empty, invalid, or the file contains no FENs, the default starting position is used.
+    *   Type: `string`
+    *   Default: (empty)
+
 ### Time Control
 
 *   **MainTimeMs**
