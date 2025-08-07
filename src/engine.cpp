@@ -102,6 +102,10 @@ void Engine::set_position(std::string_view fen, const std::vector<std::string> &
 }
 
 std::string Engine::go(const std::string &go_command, bool is_primary_game) {
+    // Reset last eval state for this search
+    last_eval_has_score = false;
+    last_eval_cp = 0;
+
     logger.log_to_engine(go_command);
     process.write_line(go_command);
     while (true) {
@@ -117,10 +121,26 @@ std::string Engine::go(const std::string &go_command, bool is_primary_game) {
                        // output
         }
 
-        // Forward UCI info lines to the GUI
+        // Forward UCI info lines to the GUI and parse eval
         if (line.rfind("info", 0) == 0) {
             // Don't forward info string lines (engine's own messages)
             if (line.rfind("info string", 0) != 0) {
+                // Parse score: "info ... score cp N" or "info ... score mate M"
+                std::stringstream iss(line);
+                std::string tok;
+                while (iss >> tok) {
+                    if (tok == "score") {
+                        std::string type; iss >> type; // cp or mate
+                        if (type == "cp") {
+                            int cp; if (iss >> cp) { last_eval_cp = cp; last_eval_has_score = true; }
+                        } else if (type == "mate") {
+                            int mate_in; if (iss >> mate_in) {
+                                last_eval_cp = (mate_in >= 0) ? 10000 : -10000;
+                                last_eval_has_score = true;
+                            }
+                        }
+                    }
+                }
                 // Conditional send for engine analysis
                 if (is_primary_game) {
                     send_to_gui(line);  // Pass-through the info line
@@ -136,4 +156,12 @@ std::string Engine::go(const std::string &go_command, bool is_primary_game) {
             return best_move;
         }
     }
+}
+
+int Engine::get_last_eval_cp() const {
+    return last_eval_cp;
+}
+
+bool Engine::has_last_eval() const {
+    return last_eval_has_score;
 }

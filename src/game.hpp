@@ -14,6 +14,16 @@
 
 // --- Game Logic ---
 
+struct NotationMoveEntry {
+    std::string type;     // "move" or "adjust"
+    std::string data;     // UCI move or adjustment
+    std::string comment;  // optional
+    std::string fen;      // fen after move
+    int engineScore = 0;  // centipawns; mate as +/-10000
+    long long engineTime = 0;  // ms
+    bool hasEngineScore = false;  // whether engineScore is valid
+};
+
 class Game {
    private:
     Engine &red_engine;
@@ -36,6 +46,9 @@ class Game {
 
     std::optional<TimeManager> time_manager;
 
+    // Notation entries for saving
+    std::vector<NotationMoveEntry> notation_moves;
+
    public:
     Game(Engine &r_eng, Engine &b_eng, std::string_view fen,
          std::optional<TimeControl> tc = std::nullopt, int timeout_buffer_ms = 5000);
@@ -50,6 +63,15 @@ class Game {
 
     // Generate the complete FEN string in the new format
     std::string generate_fen() const;
+
+    // Expose initial FEN
+    const std::string &get_initial_fen() const { return initial_fen; }
+
+    // Expose true move list
+    const std::vector<std::string> &get_true_moves() const { return move_history_true; }
+
+    // Notation export
+    const std::vector<NotationMoveEntry> &get_notation_moves() const { return notation_moves; }
 
    private:
     // Generates the board and turn part of a FEN string for repetition checks.

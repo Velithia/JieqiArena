@@ -10,6 +10,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <filesystem>
+#include <ctime>
+#include <memory>
 
 #include "game.hpp"
 #include "logger.hpp"
@@ -21,6 +24,8 @@
 std::string g_engine1_path, g_engine2_path;
 std::string g_engine1_options, g_engine2_options;
 std::string g_book_file_path;  // Path to the opening book file
+bool g_save_notation = false;
+std::string g_save_notation_dir = "notations";
 int g_rounds = 10;
 int g_concurrency = 2;
 TimeControl g_tc = {1000, 1000, 100, 100};  // Default 1s + 0.1s
@@ -51,6 +56,59 @@ std::thread g_tournament_thread;
 // Global engine management
 std::vector<Engine *> g_active_engines;
 std::mutex g_engines_mutex;
+// Thread-safe file writing mutex
+std::mutex g_file_write_mutex;
+
+// --- Helpers for Notation Saving ---
+static std::string json_escape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"': out += "\\\""; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u";
+                    const char *hex = "0123456789abcdef";
+                    out += hex[(c >> 12) & 0xF];
+                    out += hex[(c >> 8) & 0xF];
+                    out += hex[(c >> 4) & 0xF];
+                    out += hex[c & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+static std::string current_date_iso() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
+    return std::string(buf);
+}
+
+static std::string basename_from_path(const std::string &path) {
+    size_t pos = path.find_last_of("/\\");
+    return (pos == std::string::npos) ? path : path.substr(pos + 1);
+}
+
+static std::string result_to_string(Color result) {
+    if (result == Color::RED) return "1-0";
+    if (result == Color::BLACK) return "0-1";
+    return "1/2-1/2";
+}
 
 // --- Game Logic ---
 
@@ -89,6 +147,7 @@ Color play_game(const GameTask &task, bool is_primary) {
     black_engine.apply_uci_options(task.black_engine_options);
 
     Color result = Color::NONE;
+    std::unique_ptr<Game> game_ptr;
     try {
         if (g_stop_match) {
             return Color::NONE;
@@ -99,9 +158,9 @@ Color play_game(const GameTask &task, bool is_primary) {
         if (is_primary) {
             send_to_gui(std::format("info fen {}", initial_fen));
         }
-        Game game(red_engine, black_engine, initial_fen, g_tc, g_timeout_buffer_ms);
+        game_ptr = std::make_unique<Game>(red_engine, black_engine, initial_fen, g_tc, g_timeout_buffer_ms);
         // Pass the primary flag to the game
-        result = game.run(is_primary);
+        result = game_ptr->run(is_primary);
     } catch (const std::exception &e) {
         send_info_string(std::format("[Game {}] Crashed with exception: {}. Game is a draw.",
                                      task.game_id, e.what()));
@@ -110,6 +169,62 @@ Color play_game(const GameTask &task, bool is_primary) {
 
     red_engine.stop();
     black_engine.stop();
+
+    // Save notation if enabled (all workers can save)
+    if (g_save_notation && game_ptr) {
+        try {
+            std::lock_guard<std::mutex> file_lock(g_file_write_mutex);
+            std::filesystem::create_directories(g_save_notation_dir);
+            std::string filename = std::format("{}/game_{}.json", g_save_notation_dir, task.game_id);
+            std::ofstream ofs(filename, std::ios::out | std::ios::trunc);
+            if (!ofs) {
+                send_info_string(std::format("[Game {}] Failed to write notation file {}", task.game_id, filename));
+            } else {
+                // Metadata
+                std::string red_name = basename_from_path(task.red_engine_path);
+                std::string black_name = basename_from_path(task.black_engine_path);
+                std::string date_str = current_date_iso();
+                std::string current_fen = game_ptr->generate_fen();
+
+                ofs << "{\n";
+                ofs << "  \"metadata\": {\n";
+                ofs << "    \"event\": \"Jieqi Game\",\n";
+                ofs << "    \"site\": \"jieqibox\",\n";
+                ofs << "    \"date\": \"" << json_escape(date_str) << "\",\n";
+                ofs << "    \"round\": \"" << task.game_id << "\",\n";
+                ofs << "    \"white\": \"" << json_escape(red_name) << "\",\n";
+                ofs << "    \"black\": \"" << json_escape(black_name) << "\",\n";
+                ofs << "    \"result\": \"" << result_to_string(result) << "\",\n";
+                ofs << "    \"initialFen\": \"" << json_escape(task.start_fen) << "\",\n";
+                ofs << "    \"flipMode\": \"random\",\n";
+                ofs << "    \"currentFen\": \"" << json_escape(current_fen) << "\"\n";
+                ofs << "  },\n";
+
+                // Moves
+                ofs << "  \"moves\": [\n";
+                const auto &moves = game_ptr->get_notation_moves();
+                for (size_t i = 0; i < moves.size(); ++i) {
+                    const auto &m = moves[i];
+                    ofs << "    {\n";
+                    ofs << "      \"type\": \"" << json_escape(m.type) << "\",\n";
+                    ofs << "      \"data\": \"" << json_escape(m.data) << "\",\n";
+                    ofs << "      \"fen\": \"" << json_escape(m.fen) << "\"";
+                    // Optional engine fields
+                    ofs << ",\n      \"engineScore\": " << (m.hasEngineScore ? m.engineScore : 0);
+                    ofs << ",\n      \"engineTime\": " << m.engineTime << "\n";
+                    ofs << "    }";
+                    if (i + 1 < moves.size()) ofs << ",";
+                    ofs << "\n";
+                }
+                ofs << "  ]\n";
+                ofs << "}\n";
+                ofs.close();
+                send_info_string(std::format("[Game {}] Notation saved to {} (worker: {})", task.game_id, filename, is_primary ? "primary" : "secondary"));
+            }
+        } catch (const std::exception &e) {
+            send_info_string(std::format("[Game {}] Error saving notation: {}", task.game_id, e.what()));
+        }
+    }
 
     // Remove engines from global list
     {
@@ -308,7 +423,9 @@ void handle_jai() {
     send_to_gui("option name Engine1Options type string");
     send_to_gui("option name Engine2Path type string");
     send_to_gui("option name Engine2Options type string");
-    send_to_gui("option name BookFile type string");  // ADDED
+    send_to_gui("option name BookFile type string");
+    send_to_gui("option name SaveNotation type check default false");
+    send_to_gui("option name SaveNotationDir type string");
     send_to_gui("option name TotalRounds type spin default 10 min 1 max 1000");
     send_to_gui("option name Concurrency type spin default 2 min 1 max 128");
     send_to_gui("option name MainTimeMs type spin default 1000 min 0 max 3600000");
@@ -341,6 +458,10 @@ void handle_setoption(const std::string &line) {
         g_engine2_options = option_value;
     else if (option_name == "BookFile")
         g_book_file_path = option_value;
+    else if (option_name == "SaveNotation")
+        g_save_notation = (option_value == "true");
+    else if (option_name == "SaveNotationDir")
+        g_save_notation_dir = option_value;
     else if (option_name == "TotalRounds")
         g_rounds = std::stoi(option_value);
     else if (option_name == "Concurrency")

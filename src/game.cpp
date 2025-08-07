@@ -156,8 +156,19 @@ Color Game::run(bool is_primary_game) {
 
         add_move_to_histories(augmented_move, current_turn);
 
-        // --- SWITCH TURN & CHECK FOR ENDGAME ---
+        // Record notation entry (FEN must reflect next-to-move side)
+        NotationMoveEntry entry;
+        entry.type = "move";
+        entry.data = augmented_move;
+        entry.engineTime = elapsed_ms;
+        entry.hasEngineScore = current_engine.has_last_eval();
+        entry.engineScore = entry.hasEngineScore ? current_engine.get_last_eval_cp() : 0;
+
+        // Switch turn now so that generate_fen encodes the next side to move
         current_turn = (current_turn == Color::RED) ? Color::BLACK : Color::RED;
+
+        entry.fen = generate_fen();
+        notation_moves.push_back(std::move(entry));
 
         // --- CHECK FOR CHECKMATE/STALEMATE ---
         if (validator.is_checkmate_or_stalemate(current_turn, board)) {
