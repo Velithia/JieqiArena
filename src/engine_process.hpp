@@ -5,15 +5,16 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
-#include <unistd.h>
-#include <csignal>
 #include <sys/wait.h>
+#include <unistd.h>
+
+#include <csignal>
 #endif
 
 // --- Engine Process Management ---
 
 class EngineProcess {
-private:
+   private:
 #ifdef _WIN32
     PROCESS_INFORMATION pi_{};
     HANDLE h_child_stdin_read_ = NULL;
@@ -23,18 +24,18 @@ private:
     // Buffer for Windows to handle multiple lines in one read
     std::string windows_read_buffer;
 #else
-    FILE* engine_pipe_read_ = nullptr;
-    FILE* engine_pipe_write_ = nullptr;
+    FILE *engine_pipe_read_ = nullptr;
+    FILE *engine_pipe_write_ = nullptr;
     pid_t pid_ = -1;
 #endif
 
-public:
+   public:
     EngineProcess();
     ~EngineProcess();
 
-    bool start(const std::string& command);
+    bool start(const std::string &command);
     void stop();
-    void write_line(const std::string& line);
+    void write_line(const std::string &line);
     std::string read_line();
     bool is_running() const;
-}; 
+};

@@ -1,20 +1,23 @@
 #include "game.hpp"
-#include "types.hpp"
-#include "protocol.hpp"
-#include <iostream>
-#include <sstream>
+
 #include <algorithm>
-#include <format>
-#include <chrono>
-#include <cctype>
-#include <ranges>
 #include <atomic>
+#include <cctype>
+#include <chrono>
+#include <format>
+#include <iostream>
+#include <ranges>
+#include <sstream>
+
+#include "protocol.hpp"
+#include "types.hpp"
 
 extern const std::map<char, Piece> char_to_piece;
 extern const std::map<Piece, char> piece_to_char;
 extern std::atomic<bool> g_stop_match;
 
-Game::Game(Engine& r_eng, Engine& b_eng, std::string_view fen, std::optional<TimeControl> tc, int timeout_buffer_ms)
+Game::Game(Engine &r_eng, Engine &b_eng, std::string_view fen, std::optional<TimeControl> tc,
+           int timeout_buffer_ms)
     : red_engine(r_eng), black_engine(b_eng), initial_fen(fen) {
     if (tc) {
         time_manager.emplace(*tc, timeout_buffer_ms);
@@ -38,11 +41,9 @@ void Game::parse_fen(std::string_view fen) {
         if (c == '/') {
             row++;
             col = 0;
-        }
-        else if (isdigit(c)) {
+        } else if (isdigit(c)) {
             col += c - '0';
-        }
-        else {
+        } else {
             if (col < 9 && row < 10) {
                 board[row][col] = (c == 'x' || c == 'X') ? Piece::HIDDEN : char_to_piece.at(c);
                 col++;
@@ -59,11 +60,12 @@ void Game::parse_fen(std::string_view fen) {
     piece_pool.from_string(pool_part);
 
     // Record the initial position for repetition check
-    std::string fen_key = generate_fen_board_part() + " " + (current_turn == Color::RED ? 'w' : 'b');
+    std::string fen_key =
+        generate_fen_board_part() + " " + (current_turn == Color::RED ? 'w' : 'b');
     position_history[fen_key]++;
 }
 
-Piece Game::get_piece_at_coord(const std::string& coord) {
+Piece Game::get_piece_at_coord(const std::string &coord) {
     if (coord.length() != 2) return Piece::EMPTY;
     int col = coord[0] - 'a';
     int row = 9 - (coord[1] - '0');
@@ -71,7 +73,7 @@ Piece Game::get_piece_at_coord(const std::string& coord) {
     return board[row][col];
 }
 
-void Game::set_piece_at_coord(const std::string& coord, Piece p) {
+void Game::set_piece_at_coord(const std::string &coord, Piece p) {
     if (coord.length() != 2) return;
     int col = coord[0] - 'a';
     int row = 9 - (coord[1] - '0');
@@ -79,9 +81,8 @@ void Game::set_piece_at_coord(const std::string& coord, Piece p) {
     board[row][col] = p;
 }
 
-
 Color Game::run(bool is_primary_game) {
-    for (int move_count = 1; ; ++move_count) {
+    for (int move_count = 1;; ++move_count) {
         if (move_count > 300) {
             send_info_string("Game ends in a draw (move limit reached).");
             if (is_primary_game) send_to_gui("info result 1/2-1/2");
@@ -92,7 +93,8 @@ Color Game::run(bool is_primary_game) {
             return Color::NONE;
         }
 
-        Engine& current_engine = (current_turn == Color::RED) ? red_engine : black_engine;
+        Engine &current_engine = (current_turn == Color::RED) ? red_engine : black_engine;
+        Engine &opponent_engine = (current_turn == Color::RED) ? black_engine : red_engine;
 
         auto moves_for_current_player = get_moves_for_color(current_turn);
         current_engine.set_position(initial_fen, moves_for_current_player);
@@ -102,43 +104,84 @@ Color Game::run(bool is_primary_game) {
         auto start_time = std::chrono::steady_clock::now();
         std::string best_move_str = current_engine.go(go_command, is_primary_game);
         auto end_time = std::chrono::steady_clock::now();
-        
-        long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
+        long long elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+
+        // --- RESIGNATION / CRASH CHECK ---
         if (best_move_str == "resign" || best_move_str.empty() || best_move_str == "(none)") {
             std::string reason = "resigns or crashed";
-            if (best_move_str == "(none)") reason = "has no legal moves";
-            
-            std::string winner_color_str = (current_turn == Color::RED ? "Black" : "Red");
-            send_info_string(std::format("{} {}. {} wins.", current_engine.get_name(), reason, winner_color_str));
-            if (is_primary_game) send_to_gui(std::format("info result {}", (current_turn == Color::RED ? "0-1" : "1-0")));
+            if (best_move_str == "(none)") reason = "returned no move";
+
+            send_info_string(std::format("{} {}. {} wins.", current_engine.get_name(), reason,
+                                         opponent_engine.get_name()));
+            if (is_primary_game)
+                send_to_gui(
+                    std::format("info result {}", (current_turn == Color::RED ? "0-1" : "1-0")));
             return (current_turn == Color::RED) ? Color::BLACK : Color::RED;
         }
 
+        // --- ILLEGAL MOVE VALIDATION ---
+        if (!validator.is_move_legal(best_move_str, current_turn, board)) {
+            validator.is_move_legal(best_move_str, current_turn, board);
+            send_info_string(std::format("{} made an illegal move ({}). {} wins.",
+                                         current_engine.get_name(), best_move_str,
+                                         opponent_engine.get_name()));
+            if (is_primary_game)
+                send_to_gui(
+                    std::format("info result {}", (current_turn == Color::RED ? "0-1" : "1-0")));
+            return (current_turn == Color::RED) ? Color::BLACK : Color::RED;
+        }
+
+        // --- TIME CHECK ---
         if (time_manager) {
             time_manager->update(current_turn, elapsed_ms);
             if (time_manager->is_out_of_time(current_turn)) {
-                std::string winner_color_str = (current_turn == Color::RED ? "Black" : "Red");
-                send_info_string(std::format("{} loses on time. {} wins.", current_engine.get_name(), winner_color_str));
-                if (is_primary_game) send_to_gui(std::format("info result {}", (current_turn == Color::RED ? "0-1" : "1-0")));
+                send_info_string(std::format("{} loses on time. {} wins.",
+                                             current_engine.get_name(),
+                                             opponent_engine.get_name()));
+                if (is_primary_game)
+                    send_to_gui(std::format("info result {}",
+                                            (current_turn == Color::RED ? "0-1" : "1-0")));
                 return (current_turn == Color::RED) ? Color::BLACK : Color::RED;
             }
         }
 
+        // --- PROCESS VALID MOVE ---
         std::string augmented_move = process_move(best_move_str);
 
-        // Send move info before history update
-        // Added time information to the info move command
         if (is_primary_game) {
             send_to_gui(std::format("info move {} time {}", augmented_move, elapsed_ms));
         }
 
-        add_move_to_histories(augmented_move, (current_turn == Color::RED) ? Color::RED : Color::BLACK);
-        
-        // Switch turn *before* checking repetition
+        add_move_to_histories(augmented_move, current_turn);
+
+        // --- SWITCH TURN & CHECK FOR ENDGAME ---
         current_turn = (current_turn == Color::RED) ? Color::BLACK : Color::RED;
 
-        std::string fen_key = generate_fen_board_part() + " " + (current_turn == Color::RED ? 'w' : 'b');
+        // --- CHECK FOR CHECKMATE/STALEMATE ---
+        if (validator.is_checkmate_or_stalemate(current_turn, board)) {
+            if (validator.is_in_check(current_turn, board)) {
+                // Checkmate
+                send_info_string(std::format("{} is in checkmate. {} wins.",
+                                             (current_turn == Color::RED ? "Red" : "Black"),
+                                             opponent_engine.get_name()));
+                if (is_primary_game)
+                    send_to_gui(std::format("info result {}",
+                                            (current_turn == Color::RED ? "0-1" : "1-0")));
+                return (current_turn == Color::RED) ? Color::BLACK : Color::RED;
+            } else {
+                // Stalemate
+                send_info_string(std::format("{} is stalemated. Game is a draw.",
+                                             (current_turn == Color::RED ? "Red" : "Black")));
+                if (is_primary_game) send_to_gui("info result 1/2-1/2");
+                return Color::NONE;
+            }
+        }
+
+        // --- REPETITION CHECK ---
+        std::string fen_key =
+            generate_fen_board_part() + " " + (current_turn == Color::RED ? 'w' : 'b');
         position_history[fen_key]++;
         if (position_history[fen_key] >= 3) {
             send_info_string("Game ends in a draw by 3-fold repetition.");
@@ -148,7 +191,8 @@ Color Game::run(bool is_primary_game) {
     }
 }
 
-// ... (generate_fen_board_part, generate_fen, process_move, add_move_to_histories, get_moves_for_color remain the same) ...
+// ... (generate_fen_board_part, generate_fen, process_move,
+// add_move_to_histories, get_moves_for_color remain the same) ...
 std::string Game::generate_fen_board_part() const {
     std::stringstream ss;
     for (int r = 0; r < 10; ++r) {
@@ -157,8 +201,7 @@ std::string Game::generate_fen_board_part() const {
             Piece p = board[r][c];
             if (p == Piece::EMPTY) {
                 empty_count++;
-            }
-            else {
+            } else {
                 if (empty_count > 0) {
                     ss << empty_count;
                     empty_count = 0;
@@ -183,11 +226,11 @@ std::string Game::generate_fen() const {
     fen += (current_turn == Color::RED ? "w" : "b");
     fen += " ";
     fen += piece_pool.to_string();
-    fen += " 0 1"; // Move number and half-move clock
+    fen += " 0 1";  // Move number and half-move clock
     return fen;
 }
 
-std::string Game::process_move(const std::string& move_str) {
+std::string Game::process_move(const std::string &move_str) {
     if (move_str.length() != 4) return move_str;
 
     std::string from_coord = move_str.substr(0, 2);
@@ -204,10 +247,11 @@ std::string Game::process_move(const std::string& move_str) {
         flipped_piece = piece_pool.draw_random_piece(current_turn);
         if (flipped_piece) {
             augmented_move += piece_to_char.at(*flipped_piece);
-        }
-        else {
-            send_info_string(std::format("CRITICAL: Piece pool is empty for {}. Cannot flip.", (current_turn == Color::RED ? "Red" : "Black")));
-            // As a fallback, maybe make it a pawn? This state should ideally not be reached.
+        } else {
+            send_info_string(std::format("CRITICAL: Piece pool is empty for {}. Cannot flip.",
+                                         (current_turn == Color::RED ? "Red" : "Black")));
+            // As a fallback, maybe make it a pawn? This state should ideally not be
+            // reached.
             flipped_piece = (current_turn == Color::RED) ? Piece::RED_PAWN : Piece::BLK_PAWN;
             augmented_move += piece_to_char.at(*flipped_piece);
         }
@@ -219,9 +263,8 @@ std::string Game::process_move(const std::string& move_str) {
         auto captured_hidden_piece = piece_pool.draw_random_piece(opponent_color);
         if (captured_hidden_piece) {
             augmented_move += piece_to_char.at(*captured_hidden_piece);
-        }
-        else {
-             send_info_string("Warning: Opponent piece pool is empty for capture simulation.");
+        } else {
+            send_info_string("Warning: Opponent piece pool is empty for capture simulation.");
         }
     }
 
@@ -234,12 +277,12 @@ std::string Game::process_move(const std::string& move_str) {
 }
 
 // Helper function to add a move to all histories with proper information hiding
-void Game::add_move_to_histories(const std::string& true_move, Color move_color) {
+void Game::add_move_to_histories(const std::string &true_move, Color move_color) {
     move_history_true.push_back(true_move);
-    
+
     std::string red_move = true_move;
     std::string black_move = true_move;
-    
+
     if (true_move.length() > 4) {
         char last_char = true_move.back();
         if (move_color == Color::BLACK && isupper(last_char)) {
@@ -248,7 +291,7 @@ void Game::add_move_to_histories(const std::string& true_move, Color move_color)
             black_move.pop_back();
         }
     }
-    
+
     move_history_red.push_back(red_move);
     move_history_black.push_back(black_move);
 }

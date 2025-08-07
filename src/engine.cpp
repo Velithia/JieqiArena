@@ -1,17 +1,20 @@
 #include "engine.hpp"
-#include "protocol.hpp"
+
+#include <algorithm>  // for std::find_if
+#include <chrono>
+#include <format>
 #include <iostream>
 #include <sstream>
-#include <format>
 #include <thread>
-#include <chrono>
-#include <algorithm> // for std::find_if
+
+#include "protocol.hpp"
 
 Engine::Engine(std::string name, int job_id) : name(std::move(name)), logger(name, job_id) {}
 
-bool Engine::start(const std::string& path) {
+bool Engine::start(const std::string &path) {
     // GUI will get this info from JAI Engine, not the child process directly.
-    // std::cout << std::format("Starting engine '{}' with command: {}\n", name, path);
+    // std::cout << std::format("Starting engine '{}' with command: {}\n", name,
+    // path);
     return process.start(path);
 }
 
@@ -21,19 +24,19 @@ void Engine::stop() {
     process.stop();
 }
 
-void Engine::apply_uci_options(const std::string& options_str) {
+void Engine::apply_uci_options(const std::string &options_str) {
     if (options_str.empty()) {
         return;
     }
 
     // Helper lambda to trim whitespace from both ends of a string
-    auto trim = [](std::string& s) {
-        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
-            return !std::isspace(ch);
-        }));
-        s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
-            return !std::isspace(ch);
-        }).base(), s.end());
+    auto trim = [](std::string &s) {
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(),
+                                        [](unsigned char ch) { return !std::isspace(ch); }));
+        s.erase(
+            std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) { return !std::isspace(ch); })
+                .base(),
+            s.end());
     };
 
     std::string temp_options = options_str;
@@ -58,8 +61,9 @@ void Engine::apply_uci_options(const std::string& options_str) {
 
         if (value_pos != std::string::npos) {
             // Extract the name part (between "name " and " value ")
-            std::string opt_name = block.substr(name_keyword.length(), value_pos - name_keyword.length());
-            
+            std::string opt_name =
+                block.substr(name_keyword.length(), value_pos - name_keyword.length());
+
             // Extract the value part (everything after " value ")
             std::string opt_value = block.substr(value_pos + value_keyword.length());
 
@@ -73,7 +77,7 @@ void Engine::apply_uci_options(const std::string& options_str) {
                 process.write_line(cmd);
             }
         }
-        
+
         // If we are at the end, break the loop
         if (next_name_pos == std::string::npos) {
             break;
@@ -81,14 +85,15 @@ void Engine::apply_uci_options(const std::string& options_str) {
     }
 }
 
+const std::string &Engine::get_name() const {
+    return name;
+}
 
-const std::string& Engine::get_name() const { return name; }
-
-void Engine::set_position(std::string_view fen, const std::vector<std::string>& moves) {
+void Engine::set_position(std::string_view fen, const std::vector<std::string> &moves) {
     std::string cmd = std::format("position fen {}", fen);
     if (!moves.empty()) {
         cmd += " moves";
-        for (const auto& move : moves) {
+        for (const auto &move : moves) {
             cmd += " " + move;
         }
     }
@@ -96,19 +101,20 @@ void Engine::set_position(std::string_view fen, const std::vector<std::string>& 
     process.write_line(cmd);
 }
 
-std::string Engine::go(const std::string& go_command, bool is_primary_game) {
+std::string Engine::go(const std::string &go_command, bool is_primary_game) {
     logger.log_to_engine(go_command);
     process.write_line(go_command);
     while (true) {
         std::string line = process.read_line();
         logger.log_from_engine(line);
 
-        if (line.empty()) { // Check for empty line / process crash first
+        if (line.empty()) {  // Check for empty line / process crash first
             if (!process.is_running()) {
                 send_info_string(std::format("Error: Engine {} has stopped responding.", name));
                 return "resign";
             }
-            continue; // Could be an empty line for other reasons, just wait for more output
+            continue;  // Could be an empty line for other reasons, just wait for more
+                       // output
         }
 
         // Forward UCI info lines to the GUI
@@ -117,10 +123,10 @@ std::string Engine::go(const std::string& go_command, bool is_primary_game) {
             if (line.rfind("info string", 0) != 0) {
                 // Conditional send for engine analysis
                 if (is_primary_game) {
-                    send_to_gui(line); // Pass-through the info line
+                    send_to_gui(line);  // Pass-through the info line
                 }
             }
-            continue; // Continue listening
+            continue;  // Continue listening
         }
 
         if (line.rfind("bestmove", 0) == 0) {

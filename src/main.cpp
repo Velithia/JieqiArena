@@ -1,30 +1,30 @@
-#include <iostream>
-#include <string>
-#include <vector>
-#include <thread>
-#include <mutex>
-#include <deque>
-#include <atomic>
-#include <format>
-#include <sstream>
 #include <algorithm>
-#include <fstream> // For file input
+#include <atomic>
+#include <deque>
+#include <format>
+#include <fstream>  // For file input
+#include <iostream>
+#include <mutex>
 #include <random>  // For better random number generation
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
 
-#include "types.hpp"
-#include "time_manager.hpp"
-#include "logger.hpp"
 #include "game.hpp"
+#include "logger.hpp"
 #include "protocol.hpp"
+#include "time_manager.hpp"
+#include "types.hpp"
 
 // --- Global State for Tournament Configuration ---
 std::string g_engine1_path, g_engine2_path;
 std::string g_engine1_options, g_engine2_options;
-std::string g_book_file_path; // Path to the opening book file
+std::string g_book_file_path;  // Path to the opening book file
 int g_rounds = 10;
 int g_concurrency = 2;
-TimeControl g_tc = {1000, 1000, 100, 100}; // Default 1s + 0.1s
-int g_timeout_buffer_ms = 5000; // Default 5s
+TimeControl g_tc = {1000, 1000, 100, 100};  // Default 1s + 0.1s
+int g_timeout_buffer_ms = 5000;             // Default 5s
 
 // --- Shared Tournament Resources ---
 struct GameTask {
@@ -38,32 +38,31 @@ struct GameTask {
 
 std::deque<GameTask> g_game_queue;
 std::mutex g_queue_mutex;
-std::vector<std::string> g_fen_book; // Vector to store FENs from the book
+std::vector<std::string> g_fen_book;  // Vector to store FENs from the book
 std::atomic<double> g_score_engine1(0.0);
 std::atomic<double> g_score_engine2(0.0);
 std::atomic<int> g_draws(0);
 std::atomic<int> g_wins_engine1(0);
 std::atomic<int> g_losses_engine1(0);
-std::atomic<int> g_games_completed(0); // To track total games finished across all workers
+std::atomic<int> g_games_completed(0);  // To track total games finished across all workers
 std::atomic<bool> g_stop_match(false);
 std::thread g_tournament_thread;
 
 // Global engine management
-std::vector<Engine*> g_active_engines;
+std::vector<Engine *> g_active_engines;
 std::mutex g_engines_mutex;
-
 
 // --- Game Logic ---
 
 void stop_all_engines() {
     std::lock_guard<std::mutex> lock(g_engines_mutex);
-    for (Engine* engine : g_active_engines) {
+    for (Engine *engine : g_active_engines) {
         engine->stop();
     }
     g_active_engines.clear();
 }
 
-Color play_game(const GameTask& task, bool is_primary) {
+Color play_game(const GameTask &task, bool is_primary) {
     Engine red_engine("Red", task.game_id);
     Engine black_engine("Black", task.game_id);
 
@@ -75,11 +74,13 @@ Color play_game(const GameTask& task, bool is_primary) {
     }
 
     if (!red_engine.start(task.red_engine_path)) {
-        send_info_string(std::format("[Game {}] Failed to start Red engine ({}). Black wins.", task.game_id, task.red_engine_path));
+        send_info_string(std::format("[Game {}] Failed to start Red engine ({}). Black wins.",
+                                     task.game_id, task.red_engine_path));
         return Color::BLACK;
     }
     if (!black_engine.start(task.black_engine_path)) {
-        send_info_string(std::format("[Game {}] Failed to start Black engine ({}). Red wins.", task.game_id, task.black_engine_path));
+        send_info_string(std::format("[Game {}] Failed to start Black engine ({}). Red wins.",
+                                     task.game_id, task.black_engine_path));
         red_engine.stop();
         return Color::RED;
     }
@@ -92,30 +93,35 @@ Color play_game(const GameTask& task, bool is_primary) {
         if (g_stop_match) {
             return Color::NONE;
         }
-        
+
         // Use the FEN provided in the game task.
-        const std::string& initial_fen = task.start_fen;
+        const std::string &initial_fen = task.start_fen;
         if (is_primary) {
             send_to_gui(std::format("info fen {}", initial_fen));
         }
         Game game(red_engine, black_engine, initial_fen, g_tc, g_timeout_buffer_ms);
         // Pass the primary flag to the game
         result = game.run(is_primary);
-    } catch (const std::exception& e) {
-        send_info_string(std::format("[Game {}] Crashed with exception: {}. Game is a draw.", task.game_id, e.what()));
+    } catch (const std::exception &e) {
+        send_info_string(std::format("[Game {}] Crashed with exception: {}. Game is a draw.",
+                                     task.game_id, e.what()));
         result = Color::NONE;
     }
 
     red_engine.stop();
     black_engine.stop();
-    
+
     // Remove engines from global list
     {
         std::lock_guard<std::mutex> lock(g_engines_mutex);
-        g_active_engines.erase(std::remove(g_active_engines.begin(), g_active_engines.end(), &red_engine), g_active_engines.end());
-        g_active_engines.erase(std::remove(g_active_engines.begin(), g_active_engines.end(), &black_engine), g_active_engines.end());
+        g_active_engines.erase(
+            std::remove(g_active_engines.begin(), g_active_engines.end(), &red_engine),
+            g_active_engines.end());
+        g_active_engines.erase(
+            std::remove(g_active_engines.begin(), g_active_engines.end(), &black_engine),
+            g_active_engines.end());
     }
-    
+
     return result;
 }
 
@@ -137,23 +143,27 @@ void worker(int worker_id) {
             }
             task = g_game_queue.front();
             g_game_queue.pop_front();
-            total_games = g_rounds * 2; // Get total games count for reporting
+            total_games = g_rounds * 2;  // Get total games count for reporting
         }
-        
-        send_info_string(std::format("Starting Game {} on worker {} (Primary: {})", task.game_id, worker_id, is_primary_worker));
+
+        send_info_string(std::format("Starting Game {} on worker {} (Primary: {})", task.game_id,
+                                     worker_id, is_primary_worker));
 
         // Extract engine names from paths for info engine command
         if (is_primary_worker) {
-            std::string red_engine_name = task.red_engine_path.substr(task.red_engine_path.find_last_of("/\\") + 1);
-            std::string black_engine_name = task.black_engine_path.substr(task.black_engine_path.find_last_of("/\\") + 1);
+            std::string red_engine_name =
+                task.red_engine_path.substr(task.red_engine_path.find_last_of("/\\") + 1);
+            std::string black_engine_name =
+                task.black_engine_path.substr(task.black_engine_path.find_last_of("/\\") + 1);
             send_engine_info(red_engine_name, black_engine_name);
         }
 
         // Pass the primary flag to play_game
         Color result = play_game(task, is_primary_worker);
-        
-        bool e1_was_red = (task.red_engine_path == g_engine1_path && task.red_engine_options == g_engine1_options);
-        
+
+        bool e1_was_red = (task.red_engine_path == g_engine1_path &&
+                           task.red_engine_options == g_engine1_options);
+
         if (result == Color::RED) {
             if (e1_was_red) {
                 g_score_engine1 += 1.0;
@@ -176,19 +186,21 @@ void worker(int worker_id) {
             g_score_engine2 += 0.5;
             g_draws++;
         }
-        
+
         // Increment total games completed and send universal updates
         int completed_count = ++g_games_completed;
-        
+
         send_info_string(std::format("Game {} Finished. Score: E1 {:.1f} - E2 {:.1f} (Draws: {})",
-            task.game_id, g_score_engine1.load(), g_score_engine2.load(), g_draws.load()));
-        
-        // These are global stats, so any worker can send them. The GUI will just update.
+                                     task.game_id, g_score_engine1.load(), g_score_engine2.load(),
+                                     g_draws.load()));
+
+        // These are global stats, so any worker can send them. The GUI will just
+        // update.
         send_to_gui(std::format("info game {}/{}", completed_count, total_games));
-        send_to_gui(std::format("info wld {}-{}-{}", g_wins_engine1.load(), g_losses_engine1.load(), g_draws.load()));
+        send_to_gui(std::format("info wld {}-{}-{}", g_wins_engine1.load(), g_losses_engine1.load(),
+                                g_draws.load()));
     }
 }
-
 
 // --- Tournament Management ---
 
@@ -196,12 +208,13 @@ void worker(int worker_id) {
 void load_fen_book() {
     g_fen_book.clear();
     if (g_book_file_path.empty()) {
-        return; // No book file provided, will use default FEN.
+        return;  // No book file provided, will use default FEN.
     }
 
     std::ifstream file(g_book_file_path);
     if (!file.is_open()) {
-        send_info_string("Warning: Could not open BookFile: " + g_book_file_path + ". Using default position.");
+        send_info_string("Warning: Could not open BookFile: " + g_book_file_path +
+                         ". Using default position.");
         return;
     }
 
@@ -217,7 +230,8 @@ void load_fen_book() {
     if (g_fen_book.empty()) {
         send_info_string("Warning: BookFile is empty. Using default position.");
     } else {
-        send_info_string(std::format("Successfully loaded {} FENs from BookFile.", g_fen_book.size()));
+        send_info_string(
+            std::format("Successfully loaded {} FENs from BookFile.", g_fen_book.size()));
     }
 }
 
@@ -246,21 +260,18 @@ void run_tournament() {
         std::lock_guard<std::mutex> lock(g_queue_mutex);
         g_game_queue.clear();
         for (int i = 0; i < g_rounds; ++i) {
-            // Get the next FEN sequentially from the shuffled book, wrapping around if necessary.
-            std::string start_pos_fen = g_fen_book.empty() ? "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w R2r2N2n2B2b2A2a2C2c2P5p5 0 1" : g_fen_book[i % g_fen_book.size()];
+            // Get the next FEN sequentially from the shuffled book, wrapping around
+            // if necessary.
+            std::string start_pos_fen =
+                g_fen_book.empty()
+                    ? "xxxxkxxxx/9/1x5x1/x1x1x1x1x/9/9/X1X1X1X1X/1X5X1/9/XXXXKXXXX w "
+                      "R2r2N2n2B2b2A2a2C2c2P5p5 0 1"
+                    : g_fen_book[i % g_fen_book.size()];
 
-            g_game_queue.push_back({
-                i * 2 + 1,
-                g_engine1_path, g_engine2_path,
-                g_engine1_options, g_engine2_options,
-                start_pos_fen
-            });
-            g_game_queue.push_back({
-                i * 2 + 2,
-                g_engine2_path, g_engine1_path,
-                g_engine2_options, g_engine1_options,
-                start_pos_fen
-            });
+            g_game_queue.push_back({i * 2 + 1, g_engine1_path, g_engine2_path, g_engine1_options,
+                                    g_engine2_options, start_pos_fen});
+            g_game_queue.push_back({i * 2 + 2, g_engine2_path, g_engine1_path, g_engine2_options,
+                                    g_engine1_options, start_pos_fen});
         }
     }
 
@@ -274,8 +285,8 @@ void run_tournament() {
         workers.emplace_back(worker, i);
     }
 
-    for (auto& w : workers) {
-        if(w.joinable()) w.join();
+    for (auto &w : workers) {
+        if (w.joinable()) w.join();
     }
 
     if (g_stop_match) {
@@ -284,31 +295,31 @@ void run_tournament() {
         send_info_string("Tournament finished!");
     }
     // Send final WLD
-    send_to_gui(std::format("info wld {}-{}-{}", g_wins_engine1.load(), g_losses_engine1.load(), g_draws.load()));
+    send_to_gui(std::format("info wld {}-{}-{}", g_wins_engine1.load(), g_losses_engine1.load(),
+                            g_draws.load()));
 }
-
 
 // --- JAI Command Handling ---
 void handle_jai() {
     send_to_gui("id name JieqiArena Match Engine");
     send_to_gui("id author Velithia");
-    
+
     send_to_gui("option name Engine1Path type string");
     send_to_gui("option name Engine1Options type string");
     send_to_gui("option name Engine2Path type string");
     send_to_gui("option name Engine2Options type string");
-    send_to_gui("option name BookFile type string"); // ADDED
+    send_to_gui("option name BookFile type string");  // ADDED
     send_to_gui("option name TotalRounds type spin default 10 min 1 max 1000");
     send_to_gui("option name Concurrency type spin default 2 min 1 max 128");
     send_to_gui("option name MainTimeMs type spin default 1000 min 0 max 3600000");
     send_to_gui("option name IncTimeMs type spin default 0 min 0 max 60000");
     send_to_gui("option name TimeoutBufferMs type spin default 5000 min 0 max 60000");
     send_to_gui("option name Logging type check default false");
-    
+
     send_to_gui("jaiok");
 }
 
-void handle_setoption(const std::string& line) {
+void handle_setoption(const std::string &line) {
     std::stringstream ss(line);
     std::string token, name_token, option_name, value_token, option_value;
     ss >> token >> name_token >> option_name >> value_token;
@@ -320,20 +331,31 @@ void handle_setoption(const std::string& line) {
 
     if (name_token != "name" || value_token != "value") return;
 
-    if (option_name == "Engine1Path") g_engine1_path = option_value;
-    else if (option_name == "Engine2Path") g_engine2_path = option_value;
-    else if (option_name == "Engine1Options") g_engine1_options = option_value;
-    else if (option_name == "Engine2Options") g_engine2_options = option_value;
-    else if (option_name == "BookFile") g_book_file_path = option_value;
-    else if (option_name == "TotalRounds") g_rounds = std::stoi(option_value);
-    else if (option_name == "Concurrency") g_concurrency = std::stoi(option_value);
-    else if (option_name == "MainTimeMs") g_tc.wtime_ms = g_tc.btime_ms = std::stoi(option_value);
-    else if (option_name == "IncTimeMs") g_tc.winc_ms = g_tc.binc_ms = std::stoi(option_value);
-    else if (option_name == "TimeoutBufferMs") g_timeout_buffer_ms = std::stoi(option_value);
-    else if (option_name == "Logging") LoggerConfig::set_enabled(option_value == "true");
+    if (option_name == "Engine1Path")
+        g_engine1_path = option_value;
+    else if (option_name == "Engine2Path")
+        g_engine2_path = option_value;
+    else if (option_name == "Engine1Options")
+        g_engine1_options = option_value;
+    else if (option_name == "Engine2Options")
+        g_engine2_options = option_value;
+    else if (option_name == "BookFile")
+        g_book_file_path = option_value;
+    else if (option_name == "TotalRounds")
+        g_rounds = std::stoi(option_value);
+    else if (option_name == "Concurrency")
+        g_concurrency = std::stoi(option_value);
+    else if (option_name == "MainTimeMs")
+        g_tc.wtime_ms = g_tc.btime_ms = std::stoi(option_value);
+    else if (option_name == "IncTimeMs")
+        g_tc.winc_ms = g_tc.binc_ms = std::stoi(option_value);
+    else if (option_name == "TimeoutBufferMs")
+        g_timeout_buffer_ms = std::stoi(option_value);
+    else if (option_name == "Logging")
+        LoggerConfig::set_enabled(option_value == "true");
 }
 
-int main(int argc, char* argv[]) {
+int main([[maybe_unused]] int argc, [[maybe_unused]] char *argv[]) {
     std::string line;
     while (std::getline(std::cin, line)) {
         std::stringstream ss(line);

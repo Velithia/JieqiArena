@@ -9,7 +9,7 @@ LDFLAGS = -static
 TARGET = jieqi_arena
 
 # Automatically find all C++ source files
-SOURCES = main.cpp types.cpp logger.cpp piece_pool.cpp engine_process.cpp engine.cpp time_manager.cpp game.cpp protocol.cpp
+SOURCES = main.cpp types.cpp logger.cpp piece_pool.cpp engine_process.cpp engine.cpp time_manager.cpp game.cpp protocol.cpp move_validator.cpp
 # Generate object file names from source file names
 OBJECTS = $(SOURCES:.cpp=.o)
 

@@ -1,4 +1,5 @@
 #include "engine_process.hpp"
+
 #include <iostream>
 #include <vector>
 
@@ -8,7 +9,7 @@ EngineProcess::~EngineProcess() {
     stop();
 }
 
-bool EngineProcess::start(const std::string& command) {
+bool EngineProcess::start(const std::string &command) {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa;
     sa.nLength = sizeof(SECURITY_ATTRIBUTES);
@@ -52,7 +53,7 @@ bool EngineProcess::start(const std::string& command) {
         return false;
     }
 
-    if (pid_ == 0) { // Child process
+    if (pid_ == 0) {  // Child process
         close(parent_to_child[1]);
         dup2(parent_to_child[0], STDIN_FILENO);
         close(parent_to_child[0]);
@@ -61,10 +62,9 @@ bool EngineProcess::start(const std::string& command) {
         dup2(child_to_parent[1], STDOUT_FILENO);
         close(child_to_parent[1]);
 
-        execl("/bin/sh", "sh", "-c", command.c_str(), (char*)NULL);
+        execl("/bin/sh", "sh", "-c", command.c_str(), (char *)NULL);
         exit(127);
-    }
-    else { // Parent process
+    } else {  // Parent process
         close(parent_to_child[0]);
         engine_pipe_write_ = fdopen(parent_to_child[1], "w");
 
@@ -87,20 +87,32 @@ void EngineProcess::stop() {
         CloseHandle(pi_.hThread);
         pi_.hProcess = NULL;
     }
-    if (h_child_stdin_write_) { CloseHandle(h_child_stdin_write_); h_child_stdin_write_ = NULL; }
-    if (h_child_stdout_read_) { CloseHandle(h_child_stdout_read_); h_child_stdout_read_ = NULL; }
+    if (h_child_stdin_write_) {
+        CloseHandle(h_child_stdin_write_);
+        h_child_stdin_write_ = NULL;
+    }
+    if (h_child_stdout_read_) {
+        CloseHandle(h_child_stdout_read_);
+        h_child_stdout_read_ = NULL;
+    }
 #else
     if (pid_ > 0) {
         kill(pid_, SIGKILL);
         waitpid(pid_, NULL, 0);
         pid_ = -1;
     }
-    if (engine_pipe_read_) { fclose(engine_pipe_read_); engine_pipe_read_ = nullptr; }
-    if (engine_pipe_write_) { fclose(engine_pipe_write_); engine_pipe_write_ = nullptr; }
+    if (engine_pipe_read_) {
+        fclose(engine_pipe_read_);
+        engine_pipe_read_ = nullptr;
+    }
+    if (engine_pipe_write_) {
+        fclose(engine_pipe_write_);
+        engine_pipe_write_ = nullptr;
+    }
 #endif
 }
 
-void EngineProcess::write_line(const std::string& line) {
+void EngineProcess::write_line(const std::string &line) {
     if (!is_running()) return;
 #ifdef _WIN32
     DWORD bytes_written;
@@ -128,10 +140,10 @@ std::string EngineProcess::read_line() {
 
         char buffer[4096];
         DWORD bytes_read;
-        if (ReadFile(h_child_stdout_read_, buffer, sizeof(buffer), &bytes_read, NULL) && bytes_read > 0) {
+        if (ReadFile(h_child_stdout_read_, buffer, sizeof(buffer), &bytes_read, NULL) &&
+            bytes_read > 0) {
             windows_read_buffer.append(buffer, bytes_read);
-        }
-        else {
+        } else {
             // Pipe closed or error
             if (!windows_read_buffer.empty()) {
                 std::string line = windows_read_buffer;
@@ -160,4 +172,4 @@ bool EngineProcess::is_running() const {
 #else
     return pid_ != -1;
 #endif
-} 
+}
