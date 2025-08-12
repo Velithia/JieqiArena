@@ -135,7 +135,7 @@ std::string Engine::go(const std::string &go_command, bool is_primary_game) {
                             int cp; if (iss >> cp) { last_eval_cp = cp; last_eval_has_score = true; }
                         } else if (type == "mate") {
                             int mate_in; if (iss >> mate_in) {
-                                last_eval_cp = (mate_in >= 0) ? 10000 : -10000;
+                                last_eval_cp = (mate_in >= 0) ? 20000 : -20000;
                                 last_eval_has_score = true;
                             }
                         }
