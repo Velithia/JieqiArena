@@ -39,6 +39,7 @@ struct GameTask {
     std::string red_engine_options;
     std::string black_engine_options;
     std::string start_fen;
+    bool red_is_engine1;
 };
 
 std::deque<GameTask> g_game_queue;
@@ -276,8 +277,7 @@ void worker(int worker_id) {
         // Pass the primary flag to play_game
         Color result = play_game(task, is_primary_worker);
 
-        bool e1_was_red = (task.red_engine_path == g_engine1_path &&
-                           task.red_engine_options == g_engine1_options);
+        bool e1_was_red = task.red_is_engine1;
 
         if (result == Color::RED) {
             if (e1_was_red) {
@@ -384,9 +384,9 @@ void run_tournament() {
                     : g_fen_book[i % g_fen_book.size()];
 
             g_game_queue.push_back({i * 2 + 1, g_engine1_path, g_engine2_path, g_engine1_options,
-                                    g_engine2_options, start_pos_fen});
+                                    g_engine2_options, start_pos_fen, true});
             g_game_queue.push_back({i * 2 + 2, g_engine2_path, g_engine1_path, g_engine2_options,
-                                    g_engine1_options, start_pos_fen});
+                                    g_engine1_options, start_pos_fen, false});
         }
     }
 
