@@ -19,7 +19,7 @@ struct NotationMoveEntry {
     std::string data;     // UCI move or adjustment
     std::string comment;  // optional
     std::string fen;      // fen after move
-    int engineScore = 0;  // centipawns; mate as +/-20000
+    int engineScore = 0;  // centipawns; mate as +/- (30000 - ply)
     long long engineTime = 0;  // ms
     bool hasEngineScore = false;  // whether engineScore is valid
 };
