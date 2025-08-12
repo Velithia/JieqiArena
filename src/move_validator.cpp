@@ -251,7 +251,7 @@ bool MoveValidator::is_checkmate_or_stalemate(Color player_to_move, const Board 
             if (is_revealed(p)) {
                 if (get_piece_color(p) == player_to_move) is_player_piece = true;
             } else {  // Hidden piece
-                if (((r1 <= 4) ? Color::RED : Color::BLACK) == player_to_move)
+                if (((r1 > 4) ? Color::RED : Color::BLACK) == player_to_move)
                     is_player_piece = true;
             }
 
